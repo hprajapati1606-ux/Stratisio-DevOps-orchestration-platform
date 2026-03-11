@@ -19,16 +19,16 @@ jobs:
         
     - name: Install Dependencies
       run: |
-        cd v2-enterprise/backend
+        cd backend
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
     - name: Run Backend Tests
       run: |
-        cd v2-enterprise/backend
+        cd backend
         # placeholder for real tests
         echo "Running tests..."
         
     - name: Build Docker Image
       run: |
-        docker build -t stratisio-backend:latest ./v2-enterprise/backend
+        docker build -t stratisio-backend:latest ./backend

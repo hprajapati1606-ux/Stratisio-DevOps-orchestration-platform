@@ -19,15 +19,15 @@ jobs:
 
     - name: Install dependencies
       run: |
-        cd v2-enterprise/backend
+        cd backend
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
     - name: Lint with flake8
       run: |
         pip install flake8
-        flake8 v2-enterprise/backend --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 backend --count --select=E9,F63,F7,F82 --show-source --statistics
 
     - name: Build Docker Image
       run: |
-        docker build -t stratisio-enterprise-backend:latest -f v2-enterprise/infra/docker/Dockerfile.backend v2-enterprise/backend
+        docker build -t stratisio-enterprise-backend:latest -f infra/docker/Dockerfile.backend backend
