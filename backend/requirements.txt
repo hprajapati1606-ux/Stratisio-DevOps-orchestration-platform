@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+pyjwt
+passlib[bcrypt]
+python-multipart
+pydantic
+prometheus_client
+kubernetes
+psutil
+docker
+scikit-learn
+python-jose[cryptography]
+prometheus-fastapi-instrumentator

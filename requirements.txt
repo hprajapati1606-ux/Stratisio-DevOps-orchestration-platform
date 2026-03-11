@@ -1,0 +1,12 @@
+# StratisIO V2 Enterprise Root Requirements
+# Primary Backend: FastAPI
+
+fastapi
+uvicorn
+sqlalchemy
+pyjwt
+passlib[bcrypt]
+python-multipart
+pydantic<2.0.0
+prometheus_client
+kubernetes
