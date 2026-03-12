@@ -87,17 +87,10 @@ function ProviderUsage({ label, percentage, color }: { label: string, percentage
   )
 }
 
-function UserProfileCard({ router }: { router: any }) {
+function UserProfileCard({ username, onLogout }: { username: string, onLogout: () => void }) {
   const [showMenu, setShowMenu] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showSecurity, setShowSecurity] = useState(false)
-  const username = "Hitesh"
-
-  const handleLogout = () => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
-    router.push('/login')
-  }
 
   const handleSettings = () => {
     setShowMenu(false)
@@ -162,7 +155,7 @@ function UserProfileCard({ router }: { router: any }) {
               <div className="border-t border-white/10 my-2" />
 
               <button
-                onClick={handleLogout}
+                onClick={onLogout}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-all text-sm font-medium"
               >
                 <LogOut size={16} />
@@ -849,6 +842,7 @@ interface DashboardState {
   selectedResource: any;
   notification: { msg: string, type: 'success' | 'error' | 'info' } | null;
   aiMode: 'auto' | 'manual';
+  lastSync: string;
 }
 
 type Action =
@@ -861,7 +855,8 @@ type Action =
   | { type: 'TOGGLE_SETTINGS'; payload: boolean }
   | { type: 'SELECT_RESOURCE'; payload: any }
   | { type: 'SET_NOTIFICATION'; payload: { msg: string, type: 'success' | 'error' | 'info' } | null }
-  | { type: 'TOGGLE_AI_MODE' };
+  | { type: 'TOGGLE_AI_MODE' }
+  | { type: 'SET_SYNC', payload: string };
 
 const initialState: DashboardState = {
   activeView: 'Overview',
@@ -878,7 +873,8 @@ const initialState: DashboardState = {
   isSettingsOpen: false,
   selectedResource: null,
   notification: null,
-  aiMode: 'auto'
+  aiMode: 'auto',
+  lastSync: 'Waiting for first sync...'
 };
 
 function dashboardReducer(state: DashboardState, action: Action): DashboardState {
@@ -893,6 +889,7 @@ function dashboardReducer(state: DashboardState, action: Action): DashboardState
     case 'SELECT_RESOURCE': return { ...state, selectedResource: action.payload };
     case 'SET_NOTIFICATION': return { ...state, notification: action.payload };
     case 'TOGGLE_AI_MODE': return { ...state, aiMode: state.aiMode === 'auto' ? 'manual' : 'auto' };
+    case 'SET_SYNC': return { ...state, lastSync: action.payload };
     default: return state;
   }
 }
@@ -902,6 +899,24 @@ function dashboardReducer(state: DashboardState, action: Action): DashboardState
 export default function DashboardPage() {
   const router = useRouter();
   const [state, dispatch] = useReducer(dashboardReducer, initialState);
+  const [username, setUsername] = useState('Hitesh');
+
+  // 1. Auth Guard - Check session on load
+  useEffect(() => {
+    const token = localStorage.getItem('stratis_token');
+    const userStr = localStorage.getItem('stratis_user');
+    
+    if (!token) {
+      router.push('/login');
+    } else if (userStr) {
+      try {
+        const user = JSON.parse(userStr);
+        setUsername(user.username || 'Hitesh');
+      } catch (e) {
+        console.error("Failed to parse user session");
+      }
+    }
+  }, [router]);
 
   const fetchData = async () => {
     try {
@@ -935,12 +950,16 @@ export default function DashboardPage() {
       const telRes = await authFetch(`${API_BASE}/telemetry`)
       const telData = await telRes.json()
       const formattedTel = {
-        cpu_load: telData.cpu_load.map((v: number, i: number) => ({ time: `${i}:00`, value: v })),
-        throughput: telData.throughput.map((v: number, i: number) => ({ time: `${i}s`, value: v }))
+        cpu_load: (telData.cpu_load || []).map((v: number, i: number) => ({ time: `${i}:00`, value: v })),
+        throughput: (telData.throughput || []).map((v: number, i: number) => ({ time: `${i}s`, value: v }))
       }
       dispatch({ type: 'SET_TELEMETRY', payload: formattedTel })
+      
+      // 6. Update Sync Status
+      dispatch({ type: 'SET_SYNC', payload: new Date().toLocaleTimeString() })
     } catch (err) {
       console.error("Failed to fetch dashboard data:", err)
+      dispatch({ type: 'SET_NOTIFICATION', payload: { msg: `Sync Failed: ${err instanceof Error ? err.message : 'Unknown error'}`, type: 'error' } })
       if (err instanceof Error && err.message.includes('401')) {
         router.push('/login')
       }
@@ -954,17 +973,26 @@ export default function DashboardPage() {
   }, [])
 
   const authFetch = async (url: string, options: any = {}) => {
+    const token = localStorage.getItem('stratis_token');
     return fetch(url, {
       ...options,
       headers: {
         ...options.headers,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
       }
     })
   }
 
   const handleLogout = async () => {
-    // Auth removed
+    try {
+      await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+    } catch (e) {
+      console.error("Logout API failed, but clearing local session anyway.");
+    }
+    localStorage.removeItem('stratis_token');
+    localStorage.removeItem('stratis_user');
+    router.push('/login');
   }
 
   const handleDeploy = async (data: any) => {
@@ -1091,7 +1119,7 @@ export default function DashboardPage() {
         </nav>
 
         <div className="p-6">
-          <UserProfileCard router={router} />
+          <UserProfileCard username={username} onLogout={handleLogout} />
         </div>
       </aside>
 
@@ -1107,6 +1135,8 @@ export default function DashboardPage() {
               <div className="px-2.5 py-0.5 bg-blue-600/10 rounded-full border border-blue-600/20 text-[9px] font-black uppercase tracking-[2px] text-blue-500">PLATFORM V2</div>
               <div className="w-1 h-1 bg-slate-800 rounded-full" />
               <div className="text-slate-500 font-bold text-[9px] uppercase tracking-[2px]">{state.activeView}</div>
+              <div className="w-1 h-1 bg-slate-800 rounded-full" />
+              <div className="text-blue-500/60 font-bold text-[9px] uppercase tracking-[2px]">Sync: {state.lastSync}</div>
             </div>
             <h2 className="text-4xl font-black text-white tracking-tighter mb-4 leading-none">
               {state.activeView === 'Overview' ? 'Nebula' : state.activeView.split(' ')[0]} <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">{state.activeView === 'Overview' ? 'Control' : state.activeView.split(' ')[1] || 'Engine'}</span>
