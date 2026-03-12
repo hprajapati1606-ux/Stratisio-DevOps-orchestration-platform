@@ -1,8 +1,8 @@
-# StratisIO V2 Enterprise - One-Click Launcher
+# StratisIO Enterprise - One-Click Launcher
 # This script starts the FastAPI Backend and Next.js Frontend automatically.
 
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
-Write-Host "   STRATISIO V2 ENTERPRISE (FASTAPI + NEXT.JS)          " -ForegroundColor Cyan
+Write-Host "   STRATISIO ENTERPRISE (FASTAPI + NEXT.JS)          " -ForegroundColor Cyan
 Write-Host "--------------------------------------------------------" -ForegroundColor Gray
 
 $ROOT_DIR = $PSScriptRoot

@@ -1,6 +1,6 @@
 @echo off
 echo ==========================================
-echo StratisIO Enterprise V2 - One-Click Start
+echo StratisIO Enterprise - One-Click Start
 echo ==========================================
 
 echo [1/3] Seeding database with fresh telemetry...
