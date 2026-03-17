@@ -1,30 +1,55 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from datetime import datetime, timedelta
-from typing import Optional
-import jwt
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from database import get_db
+import models
+import schemas
+from .security import create_access_token, verify_password, get_password_hash
+from datetime import timedelta
 
-# JWT Security Settings
-SECRET_KEY = "SUPER_SECRET_KEY_FOR_DEMO"  # In production, use environment variables
-ALGORITHM = "HS256"
+# Configuration
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 auth_router = APIRouter()
 
 @auth_router.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    # Dummy authentication for Step 2
-    if form_data.username == "admin" and form_data.password == "password123":
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        data = {"sub": form_data.username, "role": "admin"}
-        encoded_jwt = jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
-        return {"access_token": encoded_jwt, "token_type": "bearer"}
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
     
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Incorrect username or password",
-        headers={"WWW-Authenticate": "Bearer"},
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
     )
+    return {"access_token": access_token, "token_type": "bearer", "user": {"username": user.username}}
+
+@auth_router.post("/signup")
+async def signup(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
+    # Check if user exists
+    user = db.query(models.User).filter(models.User.username == user_in.username).first()
+    if user:
+        raise HTTPException(
+            status_code=400,
+            detail="User already registered"
+        )
+    
+    # Create new user
+    new_user = models.User(
+        username=user_in.username,
+        hashed_password=get_password_hash(user_in.password),
+        is_active=1
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return {"message": "User created successfully", "username": new_user.username}
 
 @auth_router.get("/me")
 async def get_current_user_info():

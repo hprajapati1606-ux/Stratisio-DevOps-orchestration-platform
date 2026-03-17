@@ -29,7 +29,12 @@ if (-not (Test-Path "venv_enterprise")) {
         "psutil",
         "docker",
         "scikit-learn",
-        "prometheus-fastapi-instrumentator"
+        "prometheus-fastapi-instrumentator",
+        "boto3",
+        "azure-mgmt-compute",
+        "azure-mgmt-resource",
+        "azure-identity",
+        "python-dotenv"
     )
 
     foreach ($app in $apps) {

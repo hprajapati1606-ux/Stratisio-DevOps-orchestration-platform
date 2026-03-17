@@ -1,110 +1,164 @@
+import logging
 import time
 import threading
 import psutil
-import docker
+import random
 from sqlalchemy.orm import Session
 from database import SessionLocal
 import models
-import random
+from services.cloud.orchestrator import orchestrator
+from services.ai_engine import recommender
+
+logger = logging.getLogger("stratisio.autoscaler")
+
+BUDGET_GUARDRAIL_USD = 500  # Monthly spend threshold for auto-scale lockout
+
 
 class AutoScaler:
     def __init__(self):
         self.stop_event = threading.Event()
         self.thread = None
-        try:
-            self.client = docker.from_env()
-        except:
-            self.client = None
         self.enabled = False
 
     def start(self):
-        self.enabled = True
         if self.thread is None or not self.thread.is_alive():
             self.stop_event.clear()
             self.thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.thread.start()
-            print("Autoscaler: Service started.")
+            logger.info("Autoscaler: Service thread started.")
 
     def stop(self):
         self.enabled = False
         self.stop_event.set()
-        print("Autoscaler: Service stopped.")
+        logger.info("Autoscaler: Service stopped.")
 
     def _worker_loop(self):
         while not self.stop_event.is_set():
-            if self.enabled:
-                self._check_and_scale()
-            time.sleep(10) # Run every 10 seconds
+            try:
+                if self.enabled:
+                    self._check_and_scale()
+                self._self_heal()
+            except Exception as e:
+                logger.error(f"Autoscaler worker error: {e}")
+            time.sleep(15)
 
-    def _check_and_scale(self):
-        cpu = psutil.cpu_percent(interval=1)
+    # ------------------------------------------------------------------
+    # Self-Healing: restart stopped deployments automatically
+    # ------------------------------------------------------------------
+    def _self_heal(self):
         db = SessionLocal()
         try:
-            if cpu > 70:
-                self._scale_up(db, cpu)
-            elif cpu < 30:
-                self._scale_down(db, cpu)
-        except Exception as e:
-            print(f"Autoscaler Error: {e}")
+            stopped = db.query(models.Deployment).filter(models.Deployment.status == "Stopped").all()
+            for deployment in stopped:
+                if not deployment.container_id:
+                    continue
+                try:
+                    provider = orchestrator.get_provider(deployment.cloud)
+                    success = provider.restart(deployment.container_id)
+                    if success:
+                        deployment.status = "Running"
+                        event = models.ScalingEvent(
+                            deployment_name=deployment.name,
+                            action="Self-Heal",
+                            reason="Automatically restarted stopped container.",
+                        )
+                        db.add(event)
+                        db.commit()
+                        logger.info(f"Self-healed: {deployment.name} [{deployment.container_id}]")
+                except Exception as e:
+                    logger.warning(f"Self-heal failed for {deployment.name}: {e}")
         finally:
             db.close()
 
-    def _scale_up(self, db: Session, cpu: float):
-        # Find a running deployment to clone
-        deployment = db.query(models.Deployment).first()
-        if not deployment or not self.client:
+    # ------------------------------------------------------------------
+    # AI-driven scaling
+    # ------------------------------------------------------------------
+    def _check_and_scale(self):
+        cpu = psutil.cpu_percent(interval=1)
+        mem = psutil.virtual_memory().percent
+        net = psutil.net_io_counters().bytes_sent / 1024
+
+        db = SessionLocal()
+        try:
+            # Budget guardrail check
+            deployment_count = db.query(models.Deployment).count()
+            monthly_est = 50 + (deployment_count * 120) + ((cpu / 100) * 50)
+            if monthly_est > BUDGET_GUARDRAIL_USD:
+                logger.warning(
+                    f"Budget guardrail triggered (${round(monthly_est, 2)}/mo > ${BUDGET_GUARDRAIL_USD}). "
+                    "Auto-scaling is paused to prevent overspend."
+                )
+                return
+
+            rec = recommender.recommend(cpu, mem, net)
+            action = rec.get("action", "Keep Current")
+
+            if "Scale Up" in action:
+                self._apply_scaling(db, "Scale Up", rec)
+            elif "Consolidate" in action:
+                self._apply_scaling(db, "Scale Down", rec)
+
+        except Exception as e:
+            logger.error(f"Autoscaler decision error: {e}")
+        finally:
+            db.close()
+
+    def _apply_scaling(self, db: Session, action_type: str, recommendation: dict):
+        deployment = (
+            db.query(models.Deployment)
+            .order_by(models.Deployment.created_at.desc())
+            .first()
+        )
+        if not deployment:
             return
 
-        print(f"Autoscaler: CPU at {cpu}%. Scaling up {deployment.name}...")
-        
+        logger.info(f"Autoscaler: {action_type} — {recommendation.get('reasoning', '')}")
+
         try:
-            new_port = deployment.port + random.randint(1, 1000)
-            container = self.client.containers.run(
-                deployment.image,
-                detach=True,
-                ports={f'{deployment.port}/tcp': new_port},
-                name=f"scale-up-{deployment.name}-{int(time.time())}"
-            )
-            
-            # Log event
+            provider = orchestrator.get_provider(deployment.cloud)
+
+            if action_type == "Scale Up":
+                res = provider.deploy(
+                    name=f"replica-{deployment.name}",
+                    image=deployment.image,
+                    port=deployment.port + random.randint(1, 100),
+                    cloud=deployment.cloud,
+                )
+                new_deployment = models.Deployment(
+                    name=f"{deployment.name}-replica",
+                    image=deployment.image,
+                    cloud=deployment.cloud,
+                    port=deployment.port,
+                    status="Running",
+                    ip_address=res.get("ip_address"),
+                    container_id=res.get("resource_id"),
+                    cpu_usage="5%",
+                    memory_usage="128MB",
+                )
+                db.add(new_deployment)
+
+            elif action_type == "Scale Down":
+                replica = (
+                    db.query(models.Deployment)
+                    .filter(models.Deployment.name.like("%-replica%"))
+                    .first()
+                )
+                if replica:
+                    provider.terminate(replica.container_id)
+                    db.delete(replica)
+
             event = models.ScalingEvent(
                 deployment_name=deployment.name,
-                action="Scale Up",
-                reason=f"Host CPU Load: {cpu}%"
+                action=action_type,
+                reason=f"AI: {recommendation.get('reasoning', 'Automated decision')}",
             )
             db.add(event)
             db.commit()
-            print(f"Autoscaler: Successfully scaled up {deployment.name}. New container: {container.id[:12]}")
+            logger.info(f"Autoscaler: {action_type} executed via {deployment.cloud.upper()}.")
+
         except Exception as e:
-            print(f"Autoscaler Scale Up Failed: {e}")
+            logger.error(f"Autoscaler execution failed: {e}")
+            db.rollback()
 
-    def _scale_down(self, db: Session, cpu: float):
-        # Prune containers starting with 'scale-up-'
-        if not self.client:
-            return
 
-        containers = self.client.containers.list(filters={"name": "scale-up-"})
-        if not containers:
-            return
-
-        print(f"Autoscaler: CPU at {cpu}%. Scaling down...")
-        
-        try:
-            target = containers[0]
-            name = target.name
-            target.remove(force=True)
-            
-            # Log event
-            event = models.ScalingEvent(
-                deployment_name=name,
-                action="Scale Down",
-                reason=f"Host CPU Load: {cpu}%"
-            )
-            db.add(event)
-            db.commit()
-            print(f"Autoscaler: Successfully removed replica {name}")
-        except Exception as e:
-            print(f"Autoscaler Scale Down Failed: {e}")
-
-# Singleton instance
 scaler = AutoScaler()
